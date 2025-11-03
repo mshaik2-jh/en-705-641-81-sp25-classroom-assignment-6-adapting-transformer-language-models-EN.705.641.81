@@ -98,10 +98,13 @@ def evaluate_model(model, dataloader, device):
         # Hints:
         # - see the getitem function in the BoolQADataset class for how to access the input_ids and attention_mask
         # - use to() to move the tensors to the device
-
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
 
         # forward pass
         # name the output as `output`
+        with torch.no_grad():
+            output = model(input_ids=input_ids, attention_mask=attention_mask)
 
         # your code ends here
 
@@ -174,26 +177,31 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dat
 
             # get the input_ids, attention_mask, and labels from the batch and put them on the device
             # Hints: similar to the evaluate_model function
-
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
 
             # forward pass
             # name the output as `output`
             # Hints: refer to the evaluate_model function on how to get the predictions (logits)
-
+            output = mymodel(input_ids=input_ids, attention_mask=attention_mask)
 
             # compute the loss using the loss function
-
+            l = loss(output.logits, labels)
 
             # loss backward
-
+            l.backward()
 
             # update the model parameters with optimizer and lr_scheduler step
+            optimizer.step()
+            lr_scheduler.step()
 
             # zero the gradients
+            optimizer.zero_grad()
 
             # your code ends here
 
-            predictions = torch.argmax(predictions, dim=1)
+            predictions = torch.argmax(output.logits, dim=1)
 
             # update metrics
             train_accuracy.add_batch(predictions=predictions, references=batch['labels'])
@@ -228,13 +236,15 @@ def pre_process(model_name, batch_size, device, small_subset):
     print("Loading the dataset ...")
     dataset = load_dataset("boolq")
     dataset = dataset.shuffle()  # shuffle the data
+    medium_subset = True # for the homework
 
     print("Slicing the data...")
     if small_subset:
         # use this tiny subset for debugging the implementation
-        dataset_train_subset = dataset['train'][:10]
-        dataset_dev_subset = dataset['train'][:10]
-        dataset_test_subset = dataset['train'][:10]
+        # CHANGED TO 500 FOR HOMEWORK EXPERIMENTS
+        dataset_train_subset = dataset['train'][:500]
+        dataset_dev_subset = dataset['train'][:500]
+        dataset_test_subset = dataset['train'][:500]
     else:
         # since the dataset does not come with any validation data,
         # split the training data into "train" and "dev"
@@ -254,7 +264,7 @@ def pre_process(model_name, batch_size, device, small_subset):
     print("Loading the tokenizer...")
     mytokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    print("Loding the data into DS...")
+    print("Loading the data into DS...")
     train_dataset = BoolQADataset(
         passages=list(dataset_train_subset['passage']),
         questions=list(dataset_train_subset['question']),
@@ -290,11 +300,9 @@ def pre_process(model_name, batch_size, device, small_subset):
     pretrained_model.to(device)
     return pretrained_model, train_dataloader, validation_dataloader, test_dataloader
 
-
-# the entry point of the program
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--small_subset", action='store_true',
+    parser.add_argument("--small_subset", default=True, action='store_true',
                         help="When set true, only run training on a small subset of the data, used for 3.1.1")
     parser.add_argument("--num_epochs", type=int, default=1)
     parser.add_argument("--lr", type=float, default=5e-5)
@@ -318,8 +326,14 @@ if __name__ == "__main__":
     # print the GPU memory usage just to make sure things are alright
     print_gpu_memory()
 
-    val_accuracy = evaluate_model(pretrained_model, validation_dataloader, args.device)
+    val_accuracy = evaluate_model(pretrained_model, validation_dataloader, args.device)['accuracy']
     print(f" - Average DEV metrics: accuracy={val_accuracy}")
 
-    test_accuracy = evaluate_model(pretrained_model, test_dataloader, args.device)
+    test_accuracy = evaluate_model(pretrained_model, test_dataloader, args.device)['accuracy']
     print(f" - Average TEST metrics: accuracy={test_accuracy}")
+    return val_accuracy, test_accuracy
+
+
+# the entry point of the program
+if __name__ == "__main__":
+    main()

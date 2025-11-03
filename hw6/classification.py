@@ -30,23 +30,26 @@ class CustomModelforSequenceClassification(nn.Module):
 
     def forward(self, input_ids, attention_mask):
         
-        if self.type == "full":
-            # TODO: implement the forward function for the full model
+        if self.type == "full" or self.type == "head":
+            # TODO: implement the forward function for the full model (or head-tuned)
             # raise NotImplementedError("You need to implement the forward function for the full model")
 
             # pass the input_ids and attention_mask into the model to get the output object (you can name it `output`)
+            output = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
             # get the last hidden state from the output object using `.last_hidden_state`
+            last_hidden_state = output.last_hidden_state
 
             # take the mean of the last hidden state along the sequence length dimension
+            mean = torch.mean(last_hidden_state, dim=1)
 
             # pass the mean into the self.classifier to get the logits
+            logits = self.classifier(mean)
 
-
-        elif self.type == "head":
-            # TODO: implement the forward function for the head-tuned model
-            # raise NotImplementedError("You need to implement the forward function for the head-tuned model")
-            # Hint: it should be the same as the full model
+        # elif self.type == "head":
+        #     # TODO: implement the forward function for the head-tuned model
+        #     # raise NotImplementedError("You need to implement the forward function for the head-tuned model")
+        #     # Hint: it should be the same as the full model
 
         
         elif self.type == 'prefix':
@@ -56,29 +59,40 @@ class CustomModelforSequenceClassification(nn.Module):
 
             # the prefix is at self.prefix, but this is only one prefix, we want to append it to each instance in a batch
             # we make multiple copies of self.prefix here. the number of copies = batch size
+            batch_size = input_ids.size(0)
+            prefix = self.prefix.unsqueeze(0).repeat(batch_size, 1, 1)
 
             
             # concatentate the input embeddings and our prefix, make sure to put them into our gpu
             # get the input embeddings
             # Hint: you can use self.model.embeddings.word_embeddings to get the input embeddings
+            input_embeds = self.model.embeddings.word_embeddings(input_ids)
 
             # concatenate the input embeddings and the prefix
-            # Hint: check torch.cat for how to concatenate the tensors
+            # Hint: check torch.cat for how to concatenate the tensors)
 
             # move the input embeddings to the gpu
             # Hint: use .to(device='cuda') to move the tensor to the gpu
             # name the final tensor as `inputs_embeds`
+            inputs_embeds = torch.cat([prefix, input_embeds], dim=1).to(device='cuda')
 
             
             # modify attention mask
             # we need to add the prefix to the attention mask
             # the mask on the prefix should be 1, with the dimension of (batch_size, prefix_length)
             # name the final attention mask as `attention_mask`
+            prefix_attention_mask = torch.ones(batch_size, prefix.size(1), device=attention_mask.device)
+            attention_mask = torch.cat([prefix_attention_mask, attention_mask], dim=1)
 
             
             # pass the input embeddings and the attention mask into the model
             # you can do this by passing a keyword argument "inputs_embeds" to model.forward
+            output = self.model(inputs_embeds=inputs_embeds, attention_mask=attention_mask)
 
+            last_hidden_state = output.last_hidden_state
+
+            mean = torch.mean(last_hidden_state, dim=1)
+            logits = self.classifier(mean)
 
             # get the last hidden state from the output object, take the mean, and pass it into the classifier
             # Hint: same as the full model and head-tuned model
@@ -173,10 +187,13 @@ def evaluate_model(model, dataloader, device):
         # Hints:
         # - see the getitem function in the BoolQADataset class for how to access the input_ids and attention_mask
         # - use to() to move the tensors to the device
-
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
 
         # forward pass
         # name the output as `output`
+        with torch.no_grad():
+            output = model(input_ids=input_ids, attention_mask=attention_mask)
 
         # your code ends here
 
@@ -188,7 +205,7 @@ def evaluate_model(model, dataloader, device):
     return dev_accuracy.compute()
 
 
-def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dataloder, device, lr, model_name):
+def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dataloader, device, lr, model_name):
     """ Train a PyTorch Module
 
     :param torch.nn.Module mymodel: the model to be trained
@@ -222,6 +239,10 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dat
         # then you need to pass these parameters to the optimizer
         # name the optimizer as `custom_optimizer`
         # Hints: you can refer to how we do this for the optimizer above
+        custom_optimizer = torch.optim.AdamW(
+            mymodel.classifier.parameters(),
+            lr=lr,
+            weight_decay=weight_decay)
 
         # your code ends here
     
@@ -230,9 +251,11 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dat
         # raise NotImplementedError("You need to implement the optimizer for prefix-tuned model")
         # you need to get the parameters of the prefix, you can do this by calling mymodel.prefix
         # name the parameters as `prefix_params`
+        prefix_params = mymodel.prefix
 
         # you also need to get the parameters of the classifier (head), you can do this by calling mymodel.head.parameters()
         # name the parameters as `classifier_params`
+        classifier_params = mymodel.classifier.parameters()
 
         # your code ends here
         # group the parameters together
@@ -287,18 +310,22 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dat
 
             # get the input_ids, attention_mask, and labels from the batch and put them on the device
             # Hints: similar to the evaluate_model function
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
 
 
             # forward pass
             # name the output as `output`
             # Hints: refer to the evaluate_model function on how to get the predictions (logits)
             # - It's slightly different from the implementation in train of base_classification.py
-
-
+            output = mymodel(input_ids=input_ids, attention_mask=attention_mask)
             # compute the loss using the loss function
+            l = loss(output['logits'], labels)
 
 
             # loss backward
+            l.backward()
 
             # your code ends here
 
@@ -312,6 +339,7 @@ def train(mymodel, num_epochs, train_dataloader, validation_dataloader, test_dat
                 lr_scheduler.step()
                 custom_optimizer.zero_grad()
 
+            predictions = output['logits']
             predictions = torch.argmax(predictions, dim=1)
             
             # update metrics
@@ -359,9 +387,10 @@ def pre_process(model_name, batch_size, device, small_subset, type='auto'):
     print("Slicing the data...")
     if small_subset:
         # use this tiny subset for debugging the implementation
-        dataset_train_subset = dataset['train'][:10]
-        dataset_dev_subset = dataset['train'][:10]
-        dataset_test_subset = dataset['train'][:10]
+        # Using 500 for homework
+        dataset_train_subset = dataset['train'][:500]
+        dataset_dev_subset = dataset['train'][:500]
+        dataset_test_subset = dataset['train'][:500]
     else:
         # since the dataset does not come with any validation data,
         # split the training data into "train" and "dev"
@@ -381,7 +410,7 @@ def pre_process(model_name, batch_size, device, small_subset, type='auto'):
     print("Loading the tokenizer...")
     mytokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
 
-    print("Loding the data into DS...")
+    print("Loading the data into DS...")
     train_dataset = BoolQADataset(
         passages=list(dataset_train_subset['passage']),
         questions=list(dataset_train_subset['question']),
@@ -422,11 +451,9 @@ def pre_process(model_name, batch_size, device, small_subset, type='auto'):
     pretrained_model.to(device)
     return pretrained_model, train_dataloader, validation_dataloader, test_dataloader
 
-
-# the entry point of the program
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--small_subset", action='store_true')
+    parser.add_argument("--small_subset", default=True, action='store_true')
     parser.add_argument("--num_epochs", type=int, default=5)
     parser.add_argument("--lr", type=float, default=5e-5)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -452,8 +479,14 @@ if __name__ == "__main__":
     # print the GPU memory usage just to make sure things are alright
     print_gpu_memory()
 
-    val_accuracy = evaluate_model(pretrained_model, validation_dataloader, args.device)
+    val_accuracy = evaluate_model(pretrained_model, validation_dataloader, args.device)['accuracy']
     print(f" - Average DEV metrics: accuracy={val_accuracy}")
 
-    test_accuracy = evaluate_model(pretrained_model, test_dataloader, args.device)
+    test_accuracy = evaluate_model(pretrained_model, test_dataloader, args.device)['accuracy']
     print(f" - Average TEST metrics: accuracy={test_accuracy}")
+    return val_accuracy, test_accuracy
+
+
+# the entry point of the program
+if __name__ == "__main__":
+    main()
